@@ -1,0 +1,98 @@
+{
+    "use_proxy": {
+        "type": "bool",
+        "title": "是否使用代理",
+        "description": "启用后将使用代理访问禁漫网站（强烈建议开启）",
+        "default": true
+    },
+    "proxy_address": {
+        "type": "string",
+        "title": "代理地址",
+        "description": "宿主机 HTTP 代理地址，例如 http://127.0.0.1:7890。Docker 内运行时会自动替换为 host.docker.internal",
+        "default": "http://127.0.0.1:7890"
+    },
+    "proxy_port": {
+        "type": "int",
+        "title": "代理端口",
+        "description": "代理服务器端口号",
+        "default": 7890
+    },
+    "custom_domains": {
+        "type": "string",
+        "title": "自定义网页域名",
+        "description": "仅 client_impl=html 时生效，多个域名用逗号分隔",
+        "default": ""
+    },
+    "client_impl": {
+        "type": "string",
+        "title": "客户端类型",
+        "description": "推荐使用 api（移动端，自动更新域名）；html 为网页端，部分地区 IP 会被封",
+        "default": "api"
+    },
+    "auto_update_jmcomic": {
+        "type": "bool",
+        "title": "自动更新 jmcomic",
+        "description": "插件启动时自动执行 pip install jmcomic -U，保持底层库为最新版",
+        "default": true
+    },
+    "cleanup_days": {
+        "type": "int",
+        "title": "文件清理天数",
+        "description": "自动清理多少天前的下载文件",
+        "default": 3
+    },
+    "download_path": {
+        "type": "string",
+        "title": "下载路径",
+        "description": "漫画下载保存的目录路径",
+        "default": "./downloads"
+    },
+    "compress_quality": {
+        "type": "int",
+        "title": "PDF压缩质量",
+        "description": "PDF图片压缩质量(1-100)，越低文件越小但质量越差",
+        "default": 85
+    },
+    "max_image_dimension": {
+        "type": "int",
+        "title": "图片最大尺寸",
+        "description": "图片的最大宽度或高度(像素)，超过会自动缩放",
+        "default": 1200
+    },
+    "timeout": {
+        "type": "int",
+        "title": "请求超时时间",
+        "description": "网络请求超时时间(秒)",
+        "default": 10
+    },
+    "retry_times": {
+        "type": "int",
+        "title": "重试次数",
+        "description": "下载失败时的重试次数",
+        "default": 10
+    },
+    "jmcomic_log_level": {
+        "type": "string",
+        "title": "jmcomic 日志级别",
+        "description": "off=关闭(默认), summary=仅本子/章节/错误, full=全部(含每张图片进度)",
+        "default": "off"
+    },
+    "send_album_preview": {
+        "type": "bool",
+        "title": "发送封面和简介",
+        "description": "下载开始前发送本子封面、标题、标签和简介",
+        "default": true
+    },
+    "search_max_results": {
+        "type": "int",
+        "title": "搜索结果显示条数",
+        "description": "jm search 每页最多展示的本子数量",
+        "default": 10
+    },
+    "filter_r18g": {
+        "type": "bool",
+        "title": "过滤 R-18G 内容",
+        "description": "搜索、详情、下载时自动屏蔽带 R-18G 标签的本子",
+        "default": true
+    }
+}

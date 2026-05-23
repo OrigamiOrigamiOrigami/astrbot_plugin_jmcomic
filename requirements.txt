@@ -1,0 +1,4 @@
+pillow>=9.0.0
+pyyaml>=6.0
+img2pdf>=0.4.0
+jmcomic>=2.6.20
