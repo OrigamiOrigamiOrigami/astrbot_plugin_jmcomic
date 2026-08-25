@@ -100,5 +100,17 @@
         "title": "最大下载页数",
         "description": "本子总页数超过此值时拒绝下载与生成 PDF（0 表示不限制）",
         "default": 100
+    },
+    "upload_path_map": {
+        "type": "string",
+        "title": "上传路径映射",
+        "description": "AstrBot 与 NapCat 不在同一文件系统时填写。格式: Docker路径前缀=NapCat可见路径前缀。NapCat 在虚拟机时，右侧必须是虚拟机内能打开的路径（共享文件夹），例如 /AstrBot/data=/mnt/shared/main_bot/data",
+        "default": ""
+    },
+    "max_base64_upload_mb": {
+        "type": "int",
+        "title": "base64 上传大小上限(MB)",
+        "description": "路径上传均失败时，仅对不超过此大小的文件尝试 base64（过大易 WebSocket 超时）。0 表示不限制",
+        "default": 8
     }
 }

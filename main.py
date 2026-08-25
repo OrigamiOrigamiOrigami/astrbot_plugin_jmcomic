@@ -570,7 +570,7 @@ USER_AGENTS = [
     'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0'
 ]
 
-@register("jmcomic", "Origami", "禁漫漫画下载插件", "1.0.3")
+@register("jmcomic", "Origami", "禁漫漫画下载插件", "1.0.5")
 class Main(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -601,6 +601,17 @@ class Main(Star):
         self.search_max_results = self.config.get("search_max_results", 10)
         self.filter_r18g = self.config.get("filter_r18g", True)
         self.max_download_pages = int(self.config.get("max_download_pages", 100) or 0)
+        # Docker 内路径 -> NapCat/协议端可见路径（可能在另一台虚拟机）
+        # 例: /AstrBot/data=/mnt/shared/main_bot/data
+        self.upload_path_map = (self.config.get("upload_path_map") or "").strip()
+        self.max_base64_upload_mb = float(self.config.get("max_base64_upload_mb", 8) or 0)
+        if os.path.exists('/.dockerenv') and not self.upload_path_map:
+            logger.warning(
+                "检测到 Docker 环境但未配置 upload_path_map。"
+                "若 NapCat 不在同一容器内，大文件群上传只能走 base64，容易超时；"
+                "请配置 Docker路径=NapCat可见路径，"
+                "例如 /AstrBot/data=/mnt/shared/main_bot/data"
+            )
         
         # 获取配置文件路径
         self.option_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'option.yml')
@@ -1072,7 +1083,7 @@ class Main(Star):
                     if page_count > self.max_download_pages:
                         return CommandResult().message(
                             f"本子共约 {page_count} 页，超过上限 {self.max_download_pages} 页，"
-                            f"已拒绝下载（页数过多，PDF 生成过慢）。\n"
+                            f"已拒绝下载。\n"
                             f"可用 jm info {comic_id} 查看详情"
                         )
 
@@ -1188,7 +1199,7 @@ class Main(Star):
                                 await message.reply(f"漫画 {comic_id} 已上传到群文件，请查收！")
                         else:
                             if message and hasattr(message, 'reply'):
-                                await message.reply(f"上传群文件失败，可能是文件太大或没有权限。")
+                                await message.reply(self._upload_fail_hint(comic_id))
                     
                     return f"漫画 {comic_id} 已下载完成"
                 else:
@@ -1200,13 +1211,12 @@ class Main(Star):
                     if bot and user_id and pdf_path and os.path.exists(pdf_path):
                         try:
                             # 尝试发送文件
-                            await bot.call_action(
-                                action="upload_private_file",
-                                user_id=user_id,
-                                file=pdf_path,
-                                name=f"jm_{comic_id}.pdf"
+                            ok = await self._upload_private_file(
+                                bot, user_id, pdf_path, f"jm_{comic_id}.pdf"
                             )
-                            return f"漫画 {comic_id} 已发送，请查收"
+                            if ok:
+                                return f"漫画 {comic_id} 已发送，请查收"
+                            raise Exception("私聊文件上传失败")
                         except Exception as upload_err:
                             logger.error(f"发送文件失败: {str(upload_err)}")
                             
@@ -1215,7 +1225,10 @@ class Main(Star):
                                 await bot.call_action(
                                     action="send_private_msg",
                                     user_id=user_id,
-                                    message=f"漫画 {comic_id} 已下载完成，但无法发送文件。\n路径: {pdf_path}"
+                                    message=(
+                                        f"漫画 {comic_id} 已下载完成，但无法发送文件。\n"
+                                        f"{self._upload_fail_hint(comic_id)}"
+                                    )
                                 )
                                 return f"漫画 {comic_id} 已下载完成，已通知用户"
                             except Exception as msg_err:
@@ -1323,7 +1336,7 @@ class Main(Star):
                                 await message.reply(f"漫画 {comic_id} 已上传到群文件，请查收！")
                         else:
                             if message and hasattr(message, 'reply'):
-                                await message.reply(f"上传群文件失败，可能是文件太大或没有权限。")
+                                await message.reply(self._upload_fail_hint(comic_id))
                     else:
                         logger.warning("无法获取bot对象，无法上传群文件")
                 else:
@@ -1347,14 +1360,12 @@ class Main(Star):
                 # 如果获取到了用户ID,尝试发送文件
                 if bot and user_id and pdf_path and os.path.exists(pdf_path):
                     try:
-                        # 尝试发送文件
-                        await bot.call_action(
-                            action="upload_private_file",
-                            user_id=user_id,
-                            file=pdf_path,
-                            name=f"jm_{comic_id}.pdf"
+                        ok = await self._upload_private_file(
+                            bot, user_id, pdf_path, f"jm_{comic_id}.pdf"
                         )
-                        return f"漫画 {comic_id} 已发送，请查收"
+                        if ok:
+                            return f"漫画 {comic_id} 已发送，请查收"
+                        raise Exception("私聊文件上传失败")
                     except Exception as upload_err:
                         logger.error(f"发送文件失败: {str(upload_err)}")
                         
@@ -1363,7 +1374,10 @@ class Main(Star):
                             await bot.call_action(
                                 action="send_private_msg",
                                 user_id=user_id,
-                                message=f"漫画 {comic_id} 已下载完成，但无法发送文件。\n路径: {pdf_path}"
+                                message=(
+                                    f"漫画 {comic_id} 已下载完成，但无法发送文件。\n"
+                                    f"{self._upload_fail_hint(comic_id)}"
+                                )
                             )
                             return f"漫画 {comic_id} 已下载完成，已通知用户"
                         except Exception as msg_err:
@@ -1579,128 +1593,195 @@ class Main(Star):
             # 重新抛出异常，确保调用方能收到错误信息
             raise Exception(f"创建PDF失败: {str(e)}")
 
+    def _upload_fail_hint(self, comic_id: str = None) -> str:
+        """生成上传失败时的用户提示"""
+        lines = ["上传群文件失败。"]
+        if not self.upload_path_map:
+            lines.append(
+                "AstrBot 与 NapCat 不在同一文件系统时，请配置 upload_path_map："
+                "Docker路径前缀=NapCat可见路径前缀"
+                "（若 NapCat 在虚拟机，填虚拟机里的共享目录路径）"
+            )
+        else:
+            lines.append(
+                "请检查 upload_path_map 是否指向 NapCat 进程能直接打开的路径"
+                "（虚拟机请填虚拟机内路径，不是宿主机路径）"
+            )
+        lines.append("大文件不要依赖 base64（易 WebSocket 超时）")
+        if comic_id:
+            lines.append(f"文件可能已保存在 downloads/jm_{comic_id}.pdf")
+        return "\n".join(lines)
+
+    def _map_to_host_path(self, file_path: str):
+        """
+        将 Docker 内路径映射为协议端（NapCat）可直接打开的路径。
+        upload_path_map 格式: Docker前缀=协议端可见前缀
+        例: /AstrBot/data=/mnt/shared/main_bot/data
+        （NapCat 在虚拟机时，右侧必须是虚拟机内能 ls 到的路径）
+        """
+        mapping = self.upload_path_map
+        if not mapping or '=' not in mapping:
+            return None
+
+        src, dst = mapping.split('=', 1)
+        src = src.strip().replace('\\', '/').rstrip('/')
+        dst = dst.strip().rstrip('/\\')
+        if not src or not dst:
+            return None
+
+        normalized = os.path.abspath(file_path).replace('\\', '/')
+        if not normalized.startswith(src):
+            # 兼容相对路径展开后仍不匹配的情况
+            alt = file_path.replace('\\', '/')
+            if alt.startswith(src):
+                normalized = alt
+            else:
+                return None
+
+        rest = normalized[len(src):].lstrip('/')
+        # 保留用户配置的路径风格，子路径统一用 /
+        mapped = f"{dst.replace('\\', '/')}/{rest}" if rest else dst.replace('\\', '/')
+        return mapped
+
+    def _build_upload_path_candidates(self, file_path: str):
+        """生成协议端可尝试的文件路径列表（优先映射后的可见路径）"""
+        candidates = []
+        seen = set()
+
+        def add(path: str, note: str):
+            if not path or path in seen:
+                return
+            seen.add(path)
+            candidates.append((path, note))
+
+        mapped_path = self._map_to_host_path(file_path)
+        if mapped_path:
+            add(mapped_path, "协议端映射路径")
+            add(mapped_path.replace('/', '\\'), "协议端映射路径(反斜杠)")
+            add(f"file:///{mapped_path.lstrip('/')}", "协议端 file://")
+            # Windows 盘符 file:///D:/...
+            if re.match(r'^[A-Za-z]:/', mapped_path.replace('\\', '/')):
+                hp = mapped_path.replace('\\', '/')
+                add(f"file:///{hp}", "协议端 file:///盘符")
+
+        add(file_path, "容器绝对路径")
+        add(f"file://{file_path}", "容器 file://")
+
+        try:
+            current_dir = os.getcwd()
+            if file_path.startswith(current_dir):
+                add(os.path.relpath(file_path, current_dir), "相对工作目录路径")
+        except Exception:
+            pass
+
+        return candidates
+
+    async def _try_upload_group_file(self, bot, group_id: str, file_arg: str, filename: str):
+        return await bot.call_action(
+            action="upload_group_file",
+            group_id=group_id,
+            file=file_arg,
+            name=filename,
+        )
+
+    async def _upload_via_base64(self, bot, group_id: str, file_path: str, filename: str):
+        import base64
+        with open(file_path, 'rb') as f:
+            file_base64 = base64.b64encode(f.read()).decode('utf-8')
+        return await bot.call_action(
+            action="upload_group_file",
+            group_id=group_id,
+            file=f"base64://{file_base64}",
+            name=filename,
+        )
+
     async def _upload_to_group_file(self, bot, group_id: str, file_path: str, filename: str):
-        """上传文件到群文件"""
+        """上传文件到群文件：优先协议端可见路径，大文件避免 base64 超时"""
         try:
             logger.info(f"开始上传文件到群 {group_id}: {file_path}")
-            
-            # 检查文件是否存在
+
             if not os.path.exists(file_path):
                 logger.error(f"文件不存在: {file_path}")
                 return False
-            
-            # Docker环境下的路径处理
-            upload_file_path = file_path
-            
-            # 检测Docker环境并转换路径
-            if os.path.exists('/.dockerenv'):
-                logger.info("检测到Docker环境，尝试转换文件路径")
-                
-                # 方案1: 尝试使用相对于工作目录的路径
+
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            logger.info(f"待上传文件大小: {file_size_mb:.2f}MB")
+
+            # 1) 优先路径上传（upload_path_map 映射后的 NapCat 可见路径）
+            for file_arg, note in self._build_upload_path_candidates(file_path):
                 try:
-                    # 获取当前工作目录
-                    current_dir = os.getcwd()
-                    if file_path.startswith(current_dir):
-                        # 转换为相对路径
-                        relative_path = os.path.relpath(file_path, current_dir)
-                        upload_file_path = relative_path
-                        logger.info(f"Docker环境路径转换: {file_path} -> {upload_file_path}")
-                except Exception as path_err:
-                    logger.warning(f"路径转换失败: {str(path_err)}")
-            
-            # Docker环境下优先使用base64上传，因为路径问题较多
-            if os.path.exists('/.dockerenv'):
-                # 检查文件大小
-                file_size = os.path.getsize(file_path)
-                file_size_mb = file_size / (1024 * 1024)
-                
-                logger.info(f"Docker环境检测到，文件大小: {file_size_mb:.2f}MB，优先尝试base64上传")
-                
-                # 对于超大文件给出警告但仍然尝试
-                if file_size_mb > 50:
-                    logger.warning(f"文件较大({file_size_mb:.2f}MB)，base64上传可能较慢")
-                
-                try:
-                    import base64
-                    
-                    with open(file_path, 'rb') as f:
-                        file_data = f.read()
-                        file_base64 = base64.b64encode(file_data).decode('utf-8')
-                    
-                    result = await bot.call_action(
-                        action="upload_group_file",
-                        group_id=group_id,
-                        file=f"base64://{file_base64}",
-                        name=filename
-                    )
-                    
-                    logger.info(f"Docker环境base64上传成功，结果: {result}")
+                    logger.info(f"尝试路径上传 ({note}): {file_arg}")
+                    result = await self._try_upload_group_file(bot, group_id, file_arg, filename)
+                    logger.info(f"路径上传成功 ({note}): {result}")
                     return True
-                    
-                except Exception as base64_err:
-                    logger.warning(f"Docker环境base64上传失败，尝试其他方法: {str(base64_err)}")
-            
-            # 尝试其他上传方式（非Docker环境或base64失败时）
-            upload_methods = [
-                # 方法1: 使用原始路径
-                {"file": file_path, "name": filename},
-                # 方法2: 使用转换后的路径（Docker环境）
-                {"file": upload_file_path, "name": filename} if upload_file_path != file_path else None,
-                # 方法3: 使用file://协议
-                {"file": f"file://{file_path}", "name": filename},
-            ]
-            
-            # 过滤None值
-            upload_methods = [method for method in upload_methods if method is not None]
-            
-            for i, method in enumerate(upload_methods):
-                try:
-                    logger.info(f"尝试上传方法 {i+1}: {method}")
-                    
-                    result = await bot.call_action(
-                        action="upload_group_file",
-                        group_id=group_id,
-                        **method
-                    )
-                    
-                    logger.info(f"上传成功，结果: {result}")
-                    return True
-                    
                 except Exception as method_err:
-                    logger.warning(f"上传方法 {i+1} 失败: {str(method_err)}")
-                    continue
-            
-            # 如果前面的方法都失败，最后尝试base64编码上传（非Docker环境）
-            if not os.path.exists('/.dockerenv'):
+                    logger.warning(f"路径上传失败 ({note}): {method_err}")
+
+            # 2) base64 兜底：仅小文件，避免 WebSocket 超时
+            allow_b64 = self.max_base64_upload_mb <= 0 or file_size_mb <= self.max_base64_upload_mb
+            if allow_b64:
                 try:
-                    logger.info("最后尝试使用base64编码上传文件")
-                    import base64
-                    
-                    with open(file_path, 'rb') as f:
-                        file_data = f.read()
-                        file_base64 = base64.b64encode(file_data).decode('utf-8')
-                    
-                    result = await bot.call_action(
-                        action="upload_group_file",
-                        group_id=group_id,
-                        file=f"base64://{file_base64}",
-                        name=filename
+                    logger.info(
+                        f"路径均不可用，尝试 base64 上传 "
+                        f"({file_size_mb:.2f}MB, 上限 {self.max_base64_upload_mb}MB)"
                     )
-                    
-                    logger.info(f"base64上传成功，结果: {result}")
+                    result = await self._upload_via_base64(bot, group_id, file_path, filename)
+                    logger.info(f"base64 上传成功: {result}")
                     return True
-                    
                 except Exception as base64_err:
-                    logger.error(f"base64上传也失败: {str(base64_err)}")
-            
+                    logger.error(f"base64 上传失败: {base64_err}")
+            else:
+                logger.error(
+                    f"文件 {file_size_mb:.2f}MB 超过 base64 上限 "
+                    f"{self.max_base64_upload_mb}MB，已跳过 base64，避免 WebSocket 超时。"
+                    f"请配置 upload_path_map=Docker路径=NapCat可见路径"
+                    f"（虚拟机请填虚拟机内共享目录）"
+                )
+
             logger.error("所有上传方法都失败了")
             return False
-            
+
         except Exception as e:
             logger.error(f"上传文件到群失败: {str(e)}")
             logger.error(traceback.format_exc())
             return False
-    
+
+    async def _upload_private_file(self, bot, user_id: str, file_path: str, filename: str):
+        """私聊上传文件，同样优先协议端可见路径映射"""
+        if not os.path.exists(file_path):
+            return False
+
+        for file_arg, note in self._build_upload_path_candidates(file_path):
+            try:
+                logger.info(f"私聊路径上传 ({note}): {file_arg}")
+                await bot.call_action(
+                    action="upload_private_file",
+                    user_id=user_id,
+                    file=file_arg,
+                    name=filename,
+                )
+                return True
+            except Exception as e:
+                logger.warning(f"私聊路径上传失败 ({note}): {e}")
+
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        allow_b64 = self.max_base64_upload_mb <= 0 or file_size_mb <= self.max_base64_upload_mb
+        if allow_b64:
+            try:
+                import base64
+                with open(file_path, 'rb') as f:
+                    file_base64 = base64.b64encode(f.read()).decode('utf-8')
+                await bot.call_action(
+                    action="upload_private_file",
+                    user_id=user_id,
+                    file=f"base64://{file_base64}",
+                    name=filename,
+                )
+                return True
+            except Exception as e:
+                logger.error(f"私聊 base64 上传失败: {e}")
+        return False
+
     async def update_jmcomic_lib(self, event: AstrMessageEvent):
         """手动更新 jmcomic 库"""
         try:
