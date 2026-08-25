@@ -17,8 +17,6 @@ PUB_PAGE_URLS = [
     'https://jmcomic-fb.vip',
 ]
 
-GITHUB_PAGE_RANGE = range(300, 309)
-
 FALLBACK_DOMAINS = [
     'jmcomic-zzz.one',
     'jmcomic-zzz.org',
@@ -105,37 +103,14 @@ def fetch_domains_from_pub_pages(domain_set):
                 print(f"获取发布页域名失败 {url}: {e}")
 
 
-def fetch_domains_from_github(domain_set):
-    import requests
-
-    template = 'https://jmcmomic.github.io/go/{}.html'
-    for i in GITHUB_PAGE_RANGE:
-        url = template.format(i)
-        for attempt in range(3):
-            try:
-                time.sleep(random.uniform(0.3, 1))
-                response = requests.get(
-                    url,
-                    allow_redirects=False,
-                    proxies=proxy_config,
-                    verify=False,
-                    timeout=10,
-                    headers=meta_data['headers'],
-                )
-                if response.status_code == 200:
-                    _add_domains(domain_set, JmcomicText.analyse_jm_pub_html(response.text))
-                    print(f"成功从 GitHub 页面 {url} 获取域名")
-                    break
-            except Exception as e:
-                if attempt < 2:
-                    time.sleep(1 + attempt)
-                    continue
-                print(f"获取 GitHub 域名失败 {url}: {e}")
-
-
 def fetch_domains_via_jmcomic(domain_set):
+    """通过 jmcomic 内置发布页解析获取网页域名（2.7.2+ 推荐方式）"""
     try:
-        _add_domains(domain_set, JmModuleConfig.get_html_domain_all_via_github())
+        postman = JmModuleConfig.new_postman(
+            meta_data=meta_data,
+            session=True,
+        )
+        _add_domains(domain_set, JmModuleConfig.get_html_domain_all(postman))
         print(f"通过 jmcomic 内置方法获取到 {len(domain_set)} 个域名")
     except Exception as e:
         print(f"jmcomic 内置域名获取失败: {e}")
@@ -147,8 +122,6 @@ def get_all_domain():
     print("正在从禁漫发布页获取最新域名...")
     fetch_domains_from_pub_pages(domain_set)
 
-    print("正在从 GitHub 获取最新域名...")
-    fetch_domains_from_github(domain_set)
     fetch_domains_via_jmcomic(domain_set)
 
     if not domain_set:

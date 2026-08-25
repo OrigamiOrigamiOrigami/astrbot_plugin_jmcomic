@@ -67,7 +67,7 @@ def check_and_install_dependencies():
         'PIL': 'pillow',
         'yaml': 'pyyaml',
         'img2pdf': 'img2pdf',
-        'jmcomic': 'jmcomic>=2.6.20'
+        'jmcomic': 'jmcomic>=2.7.5'
     }
     
     missing_packages = []
@@ -231,6 +231,10 @@ def _truncate_list(items, limit=8) -> str:
     return ", ".join(items[:limit]) + f" 等{len(items)}个"
 
 
+# jm / JM + 空格子命令，或 jm123456 / JM123456 无空格 ID
+JM_COMMAND_PATTERN = re.compile(r"^[jJ][mM](?:\s+(.+)|(\d+))\s*$")
+
+
 def parse_comic_id(text: str):
     """从纯数字或混合文本中提取漫画 ID（兼容 jmv 风格输入）"""
     if not text:
@@ -242,6 +246,23 @@ def parse_comic_id(text: str):
     if not numbers:
         return None
     return max(numbers, key=len)
+
+
+def parse_jm_command_args(message_text: str):
+    """
+    解析 jm/JM 指令参数。
+    支持: jm 123456 / JM 123456 / jm123456 / JM123456 / jm info ...
+    返回 command_args 列表，不匹配则返回 None。
+    """
+    if not message_text:
+        return None
+    match = JM_COMMAND_PATTERN.match(message_text.strip())
+    if not match:
+        return None
+    body = match.group(1) if match.group(1) is not None else match.group(2)
+    if not body:
+        return None
+    return body.split()
 
 
 R18G_TAG_PATTERN = re.compile(r'r[\s\-_]?18[\s\-_]?g', re.I)
@@ -305,10 +326,11 @@ def collect_search_items(result_page, filter_r18g: bool = True):
     return items, hidden
 
 
-def resolve_album_page_count(album_detail, client=None) -> int:
+def resolve_album_page_count(album_detail, client=None, stop_at: int = None) -> int:
     """
     获取本子总页数。
     jmcomic API 客户端会把 page_count 硬编码为 0，需从各章节实际页数汇总。
+    stop_at: 若提供，累计超过该值后提前返回（用于下载上限快速判定）。
     """
     count = int(getattr(album_detail, 'page_count', 0) or 0)
     if count > 0:
@@ -325,6 +347,8 @@ def resolve_album_page_count(album_detail, client=None) -> int:
         try:
             photo = client.get_photo_detail(str(pid), fetch_album=False)
             total += len(photo)
+            if stop_at is not None and total > stop_at:
+                return total
         except Exception as e:
             logger.warning(f"统计章节 {pid} 页数失败: {e}")
     return total
@@ -576,6 +600,7 @@ class Main(Star):
         self.send_album_preview = self.config.get("send_album_preview", True)
         self.search_max_results = self.config.get("search_max_results", 10)
         self.filter_r18g = self.config.get("filter_r18g", True)
+        self.max_download_pages = int(self.config.get("max_download_pages", 100) or 0)
         
         # 获取配置文件路径
         self.option_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'option.yml')
@@ -676,10 +701,10 @@ class Main(Star):
         elif self.client_impl == "api":
             logger.info("使用 API 客户端，域名将由 jmcomic 自动更新")
         
-        # 注册命令
+        # 注册命令（大小写 JM/jm，支持 jm123456 无空格）
         self.context.register_commands(
             "jmcomic",
-            r"^jm\s+(.+)$",
+            JM_COMMAND_PATTERN.pattern,
             "禁漫下载指令",
             1,
             lambda ctx, msg: self.handle_jm_command(ctx, msg),
@@ -951,16 +976,13 @@ class Main(Star):
             # 获取群号
             group_id = event.get_group_id() if hasattr(event, 'get_group_id') else None
 
-            # 提取命令内容
-            match = re.match(r"^jm\s+(.+)$", message_text)
-            if not match:
-                logger.warning(f"消息不匹配命令格式: {message_text}")
-                return CommandResult().message("指令格式错误，请使用 jm <漫画ID> 或 jm download <漫画ID>")
-            
-            # 解析子命令
-            command_args = match.group(1).split()
+            # 提取命令内容（支持 jm/JM、有空格/无空格）
+            command_args = parse_jm_command_args(message_text)
             if not command_args:
-                return CommandResult().message("指令格式错误，请使用 jm <漫画ID> 或 jm download <漫画ID>")
+                logger.warning(f"消息不匹配命令格式: {message_text}")
+                return CommandResult().message(
+                    "指令格式错误，请使用 jm <漫画ID> / jm123456 / JM123456"
+                )
             
             sub_cmd = command_args[0].lower()
             
@@ -1010,7 +1032,7 @@ class Main(Star):
             else:
                 return CommandResult().message(
                     f"未知命令: {sub_cmd}\n支持的命令:\n"
-                    f"- jm <漫画ID> - 下载漫画\n"
+                    f"- jm <漫画ID> / jm123456 / JM123456 - 下载漫画\n"
                     f"- jm info <ID> - 仅查看详情\n"
                     f"- jm search tag|title <关键词> [页码] - 搜索\n"
                     f"- jm domains - 测试域名\n"
@@ -1032,6 +1054,27 @@ class Main(Star):
                 album_detail, client, album_title = await self._fetch_album(comic_id)
                 if self.filter_r18g and album_has_r18g(album_detail):
                     return CommandResult().message(R18G_BLOCK_MESSAGE)
+
+                # 本地已有 PDF 时直接复用，不再做页数限制
+                plugin_dir = os.path.dirname(os.path.abspath(__file__))
+                pdf_path = os.path.join(plugin_dir, "downloads", f"jm_{comic_id}.pdf")
+                pdf_exists = os.path.exists(pdf_path)
+
+                if not pdf_exists and self.max_download_pages > 0:
+                    loop = asyncio.get_event_loop()
+                    page_count = await loop.run_in_executor(
+                        None,
+                        resolve_album_page_count,
+                        album_detail,
+                        client,
+                        self.max_download_pages,
+                    )
+                    if page_count > self.max_download_pages:
+                        return CommandResult().message(
+                            f"本子共约 {page_count} 页，超过上限 {self.max_download_pages} 页，"
+                            f"已拒绝下载（页数过多，PDF 生成过慢）。\n"
+                            f"可用 jm info {comic_id} 查看详情"
+                        )
 
                 await self._send_album_preview_split(event, album_detail, comic_id, client)
 

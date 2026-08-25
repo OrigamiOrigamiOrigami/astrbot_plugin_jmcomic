@@ -94,5 +94,11 @@
         "title": "过滤 R-18G 内容",
         "description": "搜索、详情、下载时自动屏蔽带 R-18G 标签的本子",
         "default": true
+    },
+    "max_download_pages": {
+        "type": "int",
+        "title": "最大下载页数",
+        "description": "本子总页数超过此值时拒绝下载与生成 PDF（0 表示不限制）",
+        "default": 100
     }
 }

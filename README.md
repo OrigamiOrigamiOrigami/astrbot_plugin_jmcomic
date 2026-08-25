@@ -44,6 +44,7 @@ pip install pillow pyyaml img2pdf jmcomic
 - **send_album_preview**: 下载/查询时发送封面和简介（默认：true）
 - **search_max_results**: 搜索每页展示条数（默认：10）
 - **filter_r18g**: 过滤 R-18G 内容（默认：true）
+- **max_download_pages**: 最大下载页数，超过则拒绝下载（默认：100，设为 0 不限制）
 - **jmcomic_log_level**: 底层日志级别 off / summary / full（默认：off）
 
 ### PDF 设置
@@ -59,9 +60,11 @@ pip install pillow pyyaml img2pdf jmcomic
 ### 下载漫画
 ```
 jm <漫画ID>
+jm123456
+JM123456
 jm download <漫画ID>
 ```
-例如：`jm 1224351` 或 `jm download 1224351`
+例如：`jm 1224351`、`jm1224351`、`JM1224351` 或 `jm download 1224351`
 
 ### 查看详情（不下载）
 ```
