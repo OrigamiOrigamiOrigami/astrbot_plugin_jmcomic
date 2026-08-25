@@ -1,6 +1,6 @@
 name: jmcomic
 desc: 禁漫漫画下载插件，支持下载漫画并转换为PDF格式
 help: "jm <漫画ID> / jm123456 / JM123456 - 下载漫画（发送封面和简介）\njm info <ID> - 仅查看详情不下载\njm search tag <标签> [页码] - 按标签搜索\njm search title <关键词> [页码] - 按标题搜索\njm download <漫画ID> - 下载漫画\njm domains - 测试并更新可用域名\njm update - 手动更新 jmcomic 库\njm cleanup - 手动清理旧文件"
-version: v1.0.5
+version: v1.0.6
 author: Origami
 repo: https://github.com/OrigamiOrigamiOrigami/astrbot_plugin_jmcomic

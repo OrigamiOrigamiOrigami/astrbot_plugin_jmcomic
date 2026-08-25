@@ -42,6 +42,7 @@ pip install pillow pyyaml img2pdf jmcomic
 - **download_path**: 下载保存路径（默认：./downloads）
 - **cleanup_days**: 文件保留天数（默认：3天）
 - **send_album_preview**: 下载/查询时发送封面和简介（默认：true）
+- **preview_card**: 用 AstrBot HtmlRenderer 合成封面+简介为一张预览卡（默认：true；失败自动回退分发）
 - **search_max_results**: 搜索每页展示条数（默认：10）
 - **filter_r18g**: 过滤 R-18G 内容（默认：true）
 - **max_download_pages**: 最大下载页数，超过则拒绝下载（默认：100，设为 0 不限制）
@@ -72,6 +73,7 @@ jm download <漫画ID>
 ```
 jm info <漫画ID>
 ```
+默认会用 AstrBot HtmlRenderer 把封面和简介合成一张预览卡；若渲染失败则回退为文字+封面分发。
 
 ### 搜索本子
 ```
@@ -132,10 +134,16 @@ A: 请检查网络连接和代理配置，或手动更新 custom_domains 配置
 
 ## 更新日志
 
+### v1.0.6
+- 用 AstrBot HtmlRenderer 合成封面+简介预览卡（`preview_card`）
+- 自动裁剪 t2i 黑白画布留白
+- 预览卡改用第一章首页高清图（albums CDN 仅约 400px）
+
 ### v1.0.5
 - 新增 `upload_path_map`：将 Docker 内路径映射为 NapCat 可见路径，优先本地路径上传
 - 新增 `max_base64_upload_mb`：大文件跳过 base64，避免 WebSocket 超时
 - 适配 AstrBot(Docker) + NapCat(虚拟机/异机) 部署
+- 用 AstrBot HtmlRenderer 合成封面+简介预览卡（`preview_card`，失败回退分发）
 
 ### v1.0.4
 - 升级 jmcomic 依赖至 2.7.5，同步域名获取方式

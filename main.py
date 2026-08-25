@@ -406,27 +406,79 @@ def format_album_info(album_detail, comic_id: str, client=None, page_count=None,
 
 
 def download_album_cover(client, comic_id: str, save_dir: str):
-    """下载本子封面到本地，返回文件路径（优先 3:4 比例，避免 1:1 正方形缩略图）"""
+    """下载本子封面缩略图（CDN albums 图，通常约 400px）"""
     try:
         os.makedirs(save_dir, exist_ok=True)
         cover_path = os.path.join(save_dir, f"cover_{comic_id}.jpg")
-        # _3x4 为禁漫列表页封面比例（约 3:4），默认无后缀则为 400x400 正方形
+        # _3x4 约 400x533；无后缀多为 400x400。都不大，选面积更大的
+        best_path = None
+        best_area = 0
         for size in ('_3x4', ''):
             try:
                 client.download_album_cover(comic_id, cover_path, size=size)
                 if os.path.exists(cover_path) and os.path.getsize(cover_path) > 0:
                     with Image.open(cover_path) as img:
                         w, h = img.size
-                    logger.info(f"封面下载成功 size={size or 'default'}: {w}x{h}")
-                    if size == '_3x4' or w != h:
-                        return cover_path
+                    area = w * h
+                    logger.info(f"封面缩略图 size={size or 'default'}: {w}x{h}")
+                    if area > best_area:
+                        best_area = area
+                        best_path = cover_path
+                        if size == '_3x4':
+                            # 先拿到 _3x4；若 default 更大后面会覆盖
+                            pass
             except Exception as e:
                 logger.warning(f"下载封面失败 size={size or 'default'}: {e}")
-        if os.path.exists(cover_path) and os.path.getsize(cover_path) > 0:
-            return cover_path
+        return best_path
     except Exception as e:
         logger.warning(f"下载封面失败: {e}")
     return None
+
+
+def download_preview_cover(client, comic_id: str, save_dir: str, album_detail=None):
+    """
+    预览卡高清图：CDN albums 封面只有约 400px，改用第一章首页原图。
+    失败则回退缩略图。
+    """
+    try:
+        os.makedirs(save_dir, exist_ok=True)
+        hires_path = os.path.join(save_dir, f"cover_hires_{comic_id}.jpg")
+
+        if album_detail is None:
+            album_detail = client.get_album_detail(comic_id)
+
+        photo_id = None
+        episode_list = getattr(album_detail, "episode_list", None) or []
+        if episode_list:
+            photo_id = str(episode_list[0][0])
+        else:
+            photo_id = str(getattr(album_detail, "album_id", comic_id))
+
+        photo = client.get_photo_detail(photo_id, fetch_album=False, fetch_scramble_id=True)
+        if photo is None or len(photo) == 0:
+            raise Exception("章节无图片")
+
+        first_image = photo[0]
+        client.download_by_image_detail(first_image, hires_path, decode_image=True)
+        if not (os.path.exists(hires_path) and os.path.getsize(hires_path) > 0):
+            raise Exception("首页文件为空")
+
+        with Image.open(hires_path) as img:
+            w, h = img.size
+            # 竖图过高时取顶部 3:4，更像封面且保留高像素
+            target_h = int(w * 4 / 3)
+            if h > target_h > 0:
+                img = img.crop((0, 0, w, target_h))
+                if img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")
+                img.save(hires_path, "JPEG", quality=92, optimize=True)
+                w, h = img.size
+
+        logger.info(f"预览高清封面(第一章首页): {w}x{h}")
+        return hires_path
+    except Exception as e:
+        logger.warning(f"高清封面下载失败，回退缩略图: {e}")
+        return download_album_cover(client, comic_id, save_dir)
 
 
 def rotate_image_180(image_path: str) -> str:
@@ -449,11 +501,12 @@ def fetch_album_detail_sync(option_file: str, comic_id: str):
 
 
 def prepare_album_preview_sync(cover_dir: str, comic_id: str, album_detail, client):
-    """在线程池中准备简介文本与封面路径"""
+    """在线程池中准备简介文本、封面路径与页数"""
     page_count = resolve_album_page_count(album_detail, client)
     info_text = format_album_info(album_detail, comic_id, page_count=page_count)
-    cover_path = download_album_cover(client, comic_id, cover_dir)
-    return info_text, cover_path
+    # 预览卡用第一章首页高清图（albums CDN 只有约 400px）
+    cover_path = download_preview_cover(client, comic_id, cover_dir, album_detail)
+    return info_text, cover_path, page_count
 
 
 SEARCH_MODE_ALIASES = {
@@ -570,7 +623,7 @@ USER_AGENTS = [
     'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0'
 ]
 
-@register("jmcomic", "Origami", "禁漫漫画下载插件", "1.0.5")
+@register("jmcomic", "Origami", "禁漫漫画下载插件", "1.0.6")
 class Main(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
@@ -598,6 +651,7 @@ class Main(Star):
         self.retry_times = self.config.get("retry_times", 10)
         self.jmcomic_log_level = self.config.get("jmcomic_log_level", "off")
         self.send_album_preview = self.config.get("send_album_preview", True)
+        self.preview_card = self.config.get("preview_card", True)
         self.search_max_results = self.config.get("search_max_results", 10)
         self.filter_r18g = self.config.get("filter_r18g", True)
         self.max_download_pages = int(self.config.get("max_download_pages", 100) or 0)
@@ -766,14 +820,14 @@ class Main(Star):
             return False
 
     async def _send_album_preview_split(self, event: AstrMessageEvent, album_detail, comic_id: str, client):
-        """分开发送本子简介与封面图"""
+        """发送本子预览：优先 HtmlRenderer 合成卡，失败回退文字+封面分发"""
         if not self.send_album_preview or album_detail is None:
             return
 
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
         cover_dir = os.path.join(plugin_dir, "downloads", "_covers")
         loop = asyncio.get_event_loop()
-        info_text, cover_path = await loop.run_in_executor(
+        info_text, cover_path, page_count = await loop.run_in_executor(
             None,
             prepare_album_preview_sync,
             cover_dir,
@@ -781,6 +835,29 @@ class Main(Star):
             album_detail,
             client,
         )
+
+        if self.preview_card:
+            render_album_preview_card = None
+            try:
+                from preview_card import render_album_preview_card as _render
+                render_album_preview_card = _render
+            except ImportError:
+                try:
+                    from .preview_card import render_album_preview_card as _render
+                    render_album_preview_card = _render
+                except ImportError as e:
+                    logger.warning(f"无法导入 preview_card: {e}")
+
+            if render_album_preview_card:
+                card_path = await render_album_preview_card(
+                    album_detail,
+                    comic_id,
+                    cover_path=cover_path,
+                    page_count=page_count,
+                )
+                if card_path and await self._send_cover_image(event, card_path):
+                    return
+                logger.warning("预览卡发送失败，回退为文字+封面分发")
 
         await self._send_text(event, info_text)
         if cover_path:
@@ -1640,7 +1717,8 @@ class Main(Star):
 
         rest = normalized[len(src):].lstrip('/')
         # 保留用户配置的路径风格，子路径统一用 /
-        mapped = f"{dst.replace('\\', '/')}/{rest}" if rest else dst.replace('\\', '/')
+        dst_norm = dst.replace('\\', '/')
+        mapped = f"{dst_norm}/{rest}" if rest else dst_norm
         return mapped
 
     def _build_upload_path_candidates(self, file_path: str):

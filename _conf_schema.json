@@ -83,6 +83,12 @@
         "description": "下载开始前发送本子封面、标题、标签和简介",
         "default": true
     },
+    "preview_card": {
+        "type": "bool",
+        "title": "合成预览卡",
+        "description": "用 AstrBot HtmlRenderer 将封面与简介合成一张图发送；失败时自动回退为文字+封面分发",
+        "default": true
+    },
     "search_max_results": {
         "type": "int",
         "title": "搜索结果显示条数",
