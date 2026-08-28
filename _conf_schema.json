@@ -118,5 +118,11 @@
         "title": "base64 上传大小上限(MB)",
         "description": "路径上传均失败时，仅对不超过此大小的文件尝试 base64（过大易 WebSocket 超时）。0 表示不限制",
         "default": 8
+    },
+    "upload_sync_max_wait_sec": {
+        "type": "int",
+        "title": "共享目录同步等待上限(秒)",
+        "description": "配置了 upload_path_map 时，路径上传 ENOENT 会持续重试直到此秒数（应对 VMware hgfs 延迟）。默认 60",
+        "default": 60
     }
 }

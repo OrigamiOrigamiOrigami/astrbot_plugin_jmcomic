@@ -659,6 +659,10 @@ class Main(Star):
         # 例: /AstrBot/data=/mnt/shared/main_bot/data
         self.upload_path_map = (self.config.get("upload_path_map") or "").strip()
         self.max_base64_upload_mb = float(self.config.get("max_base64_upload_mb", 8) or 0)
+        # VMware hgfs 等共享目录同步上限（秒）；大文件常需数十秒才对虚拟机可见
+        self.upload_sync_max_wait_sec = float(
+            self.config.get("upload_sync_max_wait_sec", 60) or 60
+        )
         if os.path.exists('/.dockerenv') and not self.upload_path_map:
             logger.warning(
                 "检测到 Docker 环境但未配置 upload_path_map。"
@@ -950,111 +954,140 @@ class Main(Star):
             return f"jmcomic 更新成功: {old_version} -> {new_version}"
         return f"jmcomic 已是最新版本: {new_version or old_version or 'unknown'}"
     
+    def _cleanup_old_files_sync(self, force_all=False):
+        """同步清理 downloads（应在线程池中调用，避免阻塞事件循环）"""
+        if force_all:
+            logger.info("开始清理所有文件...")
+        else:
+            logger.info("开始清理旧文件...")
+
+        current_time = time.time()
+        cutoff_time = current_time - (self.cleanup_days * 24 * 60 * 60)
+
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        download_dir = os.path.join(plugin_dir, "downloads")
+
+        if not os.path.exists(download_dir):
+            logger.warning("下载目录不存在，跳过清理")
+            return None
+
+        total_files = 0
+        deleted_files = 0
+        total_size = 0
+        freed_size = 0
+
+        for root, dirs, files in os.walk(download_dir):
+            for file in files:
+                total_files += 1
+                file_path = os.path.join(root, file)
+                try:
+                    mtime = os.path.getmtime(file_path)
+                    file_size = os.path.getsize(file_path)
+                    total_size += file_size
+                    should_delete = force_all or (mtime < cutoff_time)
+                    if should_delete:
+                        try:
+                            os.remove(file_path)
+                            deleted_files += 1
+                            freed_size += file_size
+                            logger.info(f"已删除文件: {file_path}")
+                        except Exception as e:
+                            logger.error(f"删除文件失败 {file_path}: {str(e)}")
+                except Exception as e:
+                    logger.error(f"获取文件信息失败 {file_path}: {str(e)}")
+
+        for root, dirs, files in os.walk(download_dir, topdown=False):
+            for dir_name in dirs:
+                dir_path = os.path.join(root, dir_name)
+                try:
+                    if not os.listdir(dir_path):
+                        os.rmdir(dir_path)
+                        logger.info(f"已删除空目录: {dir_path}")
+                except Exception as e:
+                    logger.error(f"删除空目录失败 {dir_path}: {str(e)}")
+
+        def format_size(size):
+            for unit in ['B', 'KB', 'MB', 'GB']:
+                if size < 1024:
+                    return f"{size:.2f}{unit}"
+                size /= 1024
+            return f"{size:.2f}TB"
+
+        result_msg = (
+            f"清理完成:\n"
+            f"- 总文件数: {total_files}\n"
+            f"- 删除文件数: {deleted_files}\n"
+            f"- 总空间: {format_size(total_size)}\n"
+            f"- 释放空间: {format_size(freed_size)}"
+        )
+        if force_all:
+            result_msg += "\n- 清理模式: 全部清理"
+        else:
+            result_msg += f"\n- 清理模式: 仅清理 {self.cleanup_days} 天前的文件"
+        logger.info(result_msg)
+
+        return {
+            'total_files': total_files,
+            'deleted_files': deleted_files,
+            'total_size': total_size,
+            'freed_size': freed_size,
+            'force_all': force_all,
+        }
+
     async def _cleanup_old_files(self, force_all=False):
-        """清理旧文件
-        
-        Args:
-            force_all: 如果为True，删除所有文件；如果为False，只删除超过cleanup_days天的文件
-        """
+        """清理旧文件（线程池执行，不阻塞事件循环）"""
         try:
-            if force_all:
-                logger.info("开始清理所有文件...")
-            else:
-                logger.info("开始清理旧文件...")
-            
-            # 获取当前时间
-            current_time = time.time()
-            # 计算清理时间阈值
-            cutoff_time = current_time - (self.cleanup_days * 24 * 60 * 60)
-            
-            # 获取下载目录
-            plugin_dir = os.path.dirname(os.path.abspath(__file__))
-            download_dir = os.path.join(plugin_dir, "downloads")
-            
-            if not os.path.exists(download_dir):
-                logger.warning("下载目录不存在，跳过清理")
-                return
-            
-            # 统计信息
-            total_files = 0
-            deleted_files = 0
-            total_size = 0
-            freed_size = 0
-            
-            # 遍历目录（含封面缓存 _covers）
-            for root, dirs, files in os.walk(download_dir):
-                for file in files:
-                    total_files += 1
-                    file_path = os.path.join(root, file)
-                    
-                    # 获取文件修改时间
-                    try:
-                        mtime = os.path.getmtime(file_path)
-                        file_size = os.path.getsize(file_path)
-                        total_size += file_size
-                        
-                        # 判断是否需要删除：force_all=True 删除所有，否则只删除超过阈值的
-                        should_delete = force_all or (mtime < cutoff_time)
-                        
-                        if should_delete:
-                            try:
-                                os.remove(file_path)
-                                deleted_files += 1
-                                freed_size += file_size
-                                logger.info(f"已删除文件: {file_path}")
-                            except Exception as e:
-                                logger.error(f"删除文件失败 {file_path}: {str(e)}")
-                    except Exception as e:
-                        logger.error(f"获取文件信息失败 {file_path}: {str(e)}")
-            
-            # 清理空目录
-            for root, dirs, files in os.walk(download_dir, topdown=False):
-                for dir_name in dirs:
-                    dir_path = os.path.join(root, dir_name)
-                    try:
-                        if not os.listdir(dir_path):  # 如果目录为空
-                            os.rmdir(dir_path)
-                            logger.info(f"已删除空目录: {dir_path}")
-                    except Exception as e:
-                        logger.error(f"删除空目录失败 {dir_path}: {str(e)}")
-            
-            # 转换文件大小为可读格式
-            def format_size(size):
-                for unit in ['B', 'KB', 'MB', 'GB']:
-                    if size < 1024:
-                        return f"{size:.2f}{unit}"
-                    size /= 1024
-                return f"{size:.2f}TB"
-            
-            # 记录清理结果
-            result_msg = (
-                f"清理完成:\n"
-                f"- 总文件数: {total_files}\n"
-                f"- 删除文件数: {deleted_files}\n"
-                f"- 总空间: {format_size(total_size)}\n"
-                f"- 释放空间: {format_size(freed_size)}"
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None, self._cleanup_old_files_sync, force_all
             )
-            
-            if force_all:
-                result_msg += f"\n- 清理模式: 全部清理"
-            else:
-                result_msg += f"\n- 清理模式: 仅清理 {self.cleanup_days} 天前的文件"
-            
-            logger.info(result_msg)
-            
-            # 返回清理结果供调用者使用
-            return {
-                'total_files': total_files,
-                'deleted_files': deleted_files,
-                'total_size': total_size,
-                'freed_size': freed_size,
-                'force_all': force_all
-            }
-            
         except Exception as e:
             logger.error(f"清理旧文件失败: {str(e)}")
             logger.error(traceback.format_exc())
-    
+            return None
+
+    @staticmethod
+    def _format_cleanup_size(size):
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size < 1024:
+                return f"{size:.2f}{unit}"
+            size /= 1024
+        return f"{size:.2f}TB"
+
+    async def _manual_cleanup_task(self, event: AstrMessageEvent):
+        """后台执行全量清理并回消息"""
+        message = event
+        try:
+            result = await self._cleanup_old_files(force_all=True)
+            if result:
+                result_msg = (
+                    f"清理完成！\n"
+                    f"删除了 {result['deleted_files']}/{result['total_files']} 个文件\n"
+                    f"释放空间: {self._format_cleanup_size(result['freed_size'])}"
+                )
+            else:
+                result_msg = "文件清理完成"
+            if message and hasattr(message, 'reply'):
+                await message.reply(result_msg)
+        except Exception as e:
+            logger.error(f"手动清理任务异常: {str(e)}")
+            logger.error(traceback.format_exc())
+            if message and hasattr(message, 'reply'):
+                try:
+                    await message.reply("清理失败")
+                except Exception:
+                    pass
+
+    async def manual_cleanup(self, event: AstrMessageEvent):
+        """手动清理文件（立即返回，后台删除）"""
+        try:
+            task = asyncio.create_task(self._manual_cleanup_task(event))
+            task.add_done_callback(self._handle_task_exception)
+            return CommandResult().message("开始清理所有下载文件，完成后会通知…")
+        except Exception as e:
+            logger.error(f"手动清理异常: {str(e)}")
+            return CommandResult().message("清理失败")
+
     async def handle_jm_command(self, context: Context, event: AstrMessageEvent):
         """处理禁漫相关指令"""
         try:
@@ -1143,7 +1176,7 @@ class Main(Star):
                 if self.filter_r18g and album_has_r18g(album_detail):
                     return CommandResult().message(R18G_BLOCK_MESSAGE)
 
-                # 本地已有 PDF 时直接复用，不再做页数限制
+                # 本地已有 PDF 时直接复用，不再做页数限制、不发预览
                 plugin_dir = os.path.dirname(os.path.abspath(__file__))
                 pdf_path = os.path.join(plugin_dir, "downloads", f"jm_{comic_id}.pdf")
                 pdf_exists = os.path.exists(pdf_path)
@@ -1164,13 +1197,18 @@ class Main(Star):
                             f"可用 jm info {comic_id} 查看详情"
                         )
 
-                await self._send_album_preview_split(event, album_detail, comic_id, client)
+                if pdf_exists:
+                    logger.info(f"本地已有缓存 PDF，跳过预览直接上传: {pdf_path}")
+                else:
+                    await self._send_album_preview_split(event, album_detail, comic_id, client)
 
                 task = asyncio.create_task(
                     self._download_comic_task(comic_id, event, group_id, album_title)
                 )
                 task.add_done_callback(self._handle_task_exception)
 
+                if pdf_exists:
+                    return CommandResult().message(f"漫画 {comic_id} 已有缓存，正在上传…")
                 return self._build_download_start_result(comic_id)
 
             except Exception as test_e:
@@ -1181,43 +1219,6 @@ class Main(Star):
             logger.error(f"下载漫画任务异常: {str(e)}")
             logger.error(traceback.format_exc())
             return CommandResult().message("下载失败")
-    
-    async def manual_cleanup(self, event: AstrMessageEvent):
-        """手动清理文件"""
-        try:
-            message = event
-            if hasattr(message, 'reply'):
-                await message.reply("开始清理所有下载文件...")
-            
-            # 执行清理，force_all=True 表示删除所有文件
-            result = await self._cleanup_old_files(force_all=True)
-            
-            if result:
-                # 转换文件大小为可读格式
-                def format_size(size):
-                    for unit in ['B', 'KB', 'MB', 'GB']:
-                        if size < 1024:
-                            return f"{size:.2f}{unit}"
-                        size /= 1024
-                    return f"{size:.2f}TB"
-                
-                result_msg = (
-                    f"清理完成！\n"
-                    f"删除了 {result['deleted_files']}/{result['total_files']} 个文件\n"
-                    f"释放空间: {format_size(result['freed_size'])}"
-                )
-                
-                if hasattr(message, 'reply'):
-                    await message.reply(result_msg)
-                
-                return CommandResult().message(result_msg)
-            else:
-                if hasattr(message, 'reply'):
-                    await message.reply("文件清理完成")
-                return CommandResult().message("清理任务已完成")
-        except Exception as e:
-            logger.error(f"手动清理异常: {str(e)}")
-            return CommandResult().message("清理失败")
     
     def _handle_task_exception(self, task):
         """处理异步任务异常的回调函数"""
@@ -1663,6 +1664,7 @@ class Main(Star):
                         logger.error(f"使用PIL创建PDF失败: {str(pil_err)}")
                         raise Exception(f"使用PIL创建PDF失败: {str(pil_err)}")
             
+            self._finalize_written_file(pdf_path)
             return pdf_path
         except Exception as e:
             logger.error(f"创建PDF异常: {str(e)}")
@@ -1685,9 +1687,68 @@ class Main(Star):
                 "（虚拟机请填虚拟机内路径，不是宿主机路径）"
             )
         lines.append("大文件不要依赖 base64（易 WebSocket 超时）")
+        if self.upload_path_map:
+            lines.append(
+                "若路径上传偶发失败，可能是 VMware 共享目录尚未同步到虚拟机，"
+                "可稍后在虚拟机执行 ls 映射路径确认文件是否出现"
+            )
         if comic_id:
             lines.append(f"文件可能已保存在 downloads/jm_{comic_id}.pdf")
         return "\n".join(lines)
+
+    def _finalize_written_file(self, file_path: str):
+        """强制刷盘，减轻 Docker→宿主机→hgfs 同步延迟"""
+        try:
+            with open(file_path, 'rb') as f:
+                os.fsync(f.fileno())
+        except Exception as e:
+            logger.debug(f"文件 fsync 失败: {e}")
+
+    async def _wait_file_stable(
+        self,
+        file_path: str,
+        stable_seconds: float = 1.5,
+        timeout: float = 30.0,
+    ) -> bool:
+        """等待文件写入完成且大小稳定"""
+        deadline = time.time() + timeout
+        last_size = -1
+        stable_start = None
+        while time.time() < deadline:
+            if not os.path.isfile(file_path):
+                await asyncio.sleep(0.25)
+                continue
+            size = os.path.getsize(file_path)
+            if size > 0 and size == last_size:
+                if stable_start is None:
+                    stable_start = time.time()
+                elif time.time() - stable_start >= stable_seconds:
+                    return True
+            else:
+                last_size = size
+                stable_start = None
+            await asyncio.sleep(0.25)
+        return os.path.isfile(file_path) and os.path.getsize(file_path) > 0
+
+    async def _try_path_upload_once(
+        self,
+        bot,
+        group_id: str,
+        file_path: str,
+        filename: str,
+        mapped_only: bool = False,
+    ) -> bool:
+        for file_arg, note in self._build_upload_path_candidates(
+            file_path, mapped_only=mapped_only
+        ):
+            try:
+                logger.info(f"尝试路径上传 ({note}): {file_arg}")
+                result = await self._try_upload_group_file(bot, group_id, file_arg, filename)
+                logger.info(f"路径上传成功 ({note}): {result}")
+                return True
+            except Exception as method_err:
+                logger.warning(f"路径上传失败 ({note}): {method_err}")
+        return False
 
     def _map_to_host_path(self, file_path: str):
         """
@@ -1721,8 +1782,8 @@ class Main(Star):
         mapped = f"{dst_norm}/{rest}" if rest else dst_norm
         return mapped
 
-    def _build_upload_path_candidates(self, file_path: str):
-        """生成协议端可尝试的文件路径列表（优先映射后的可见路径）"""
+    def _build_upload_path_candidates(self, file_path: str, mapped_only: bool = False):
+        """生成协议端可尝试的文件路径列表（优先映射后的 file://）"""
         candidates = []
         seen = set()
 
@@ -1734,13 +1795,18 @@ class Main(Star):
 
         mapped_path = self._map_to_host_path(file_path)
         if mapped_path:
-            add(mapped_path, "协议端映射路径")
-            add(mapped_path.replace('/', '\\'), "协议端映射路径(反斜杠)")
+            # NapCat 认 file://；裸路径常报「识别URL失败」，故 file:// 优先
             add(f"file:///{mapped_path.lstrip('/')}", "协议端 file://")
-            # Windows 盘符 file:///D:/...
             if re.match(r'^[A-Za-z]:/', mapped_path.replace('\\', '/')):
                 hp = mapped_path.replace('\\', '/')
                 add(f"file:///{hp}", "协议端 file:///盘符")
+            if not mapped_only:
+                add(mapped_path, "协议端映射路径")
+                if not mapped_path.startswith('/'):
+                    add(mapped_path.replace('/', '\\'), "协议端映射路径(反斜杠)")
+
+        if mapped_only:
+            return candidates
 
         add(file_path, "容器绝对路径")
         add(f"file://{file_path}", "容器 file://")
@@ -1753,6 +1819,25 @@ class Main(Star):
             pass
 
         return candidates
+
+    def _sync_wait_plan(self, file_size_mb: float):
+        """
+        共享目录同步等待计划：首等 + 指数退避重试。
+        大文件在 hgfs 上可见往往更慢。
+        """
+        max_wait = max(5.0, self.upload_sync_max_wait_sec)
+        # 首等：约 2s + 0.2s/MB，上限 12s
+        initial = min(12.0, 2.0 + file_size_mb * 0.2)
+        delays = [initial]
+        elapsed = initial
+        step = 3.0
+        while elapsed + step <= max_wait:
+            delays.append(step)
+            elapsed += step
+            step = min(step * 1.5, 15.0)
+        if len(delays) == 1 and max_wait > initial:
+            delays.append(max_wait - initial)
+        return delays
 
     async def _try_upload_group_file(self, bot, group_id: str, file_arg: str, filename: str):
         return await bot.call_action(
@@ -1785,15 +1870,33 @@ class Main(Star):
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             logger.info(f"待上传文件大小: {file_size_mb:.2f}MB")
 
-            # 1) 优先路径上传（upload_path_map 映射后的 NapCat 可见路径）
-            for file_arg, note in self._build_upload_path_candidates(file_path):
-                try:
-                    logger.info(f"尝试路径上传 ({note}): {file_arg}")
-                    result = await self._try_upload_group_file(bot, group_id, file_arg, filename)
-                    logger.info(f"路径上传成功 ({note}): {result}")
+            if not await self._wait_file_stable(file_path):
+                logger.warning(f"文件大小未稳定，仍尝试上传: {file_path}")
+
+            # 1) 路径上传；有映射时按计划等待并重试（缓解 hgfs 延迟）
+            if self.upload_path_map:
+                delays = self._sync_wait_plan(file_size_mb)
+                total = sum(delays)
+                logger.info(
+                    f"共享目录同步等待计划: {len(delays)} 次尝试，"
+                    f"累计约 {total:.0f}s（上限 {self.upload_sync_max_wait_sec}s）"
+                )
+                for attempt, wait_sec in enumerate(delays, start=1):
+                    if wait_sec > 0:
+                        logger.info(
+                            f"等待共享目录同步 {wait_sec:.1f}s "
+                            f"（第 {attempt}/{len(delays)} 次）"
+                        )
+                        await asyncio.sleep(wait_sec)
+                    # 首次试全部候选；之后只重试映射 file://（其余路径注定失败）
+                    mapped_only = attempt > 1
+                    if await self._try_path_upload_once(
+                        bot, group_id, file_path, filename, mapped_only=mapped_only
+                    ):
+                        return True
+            else:
+                if await self._try_path_upload_once(bot, group_id, file_path, filename):
                     return True
-                except Exception as method_err:
-                    logger.warning(f"路径上传失败 ({note}): {method_err}")
 
             # 2) base64 兜底：仅小文件，避免 WebSocket 超时
             allow_b64 = self.max_base64_upload_mb <= 0 or file_size_mb <= self.max_base64_upload_mb
@@ -1809,11 +1912,15 @@ class Main(Star):
                 except Exception as base64_err:
                     logger.error(f"base64 上传失败: {base64_err}")
             else:
+                mapped = self._map_to_host_path(file_path) or "(未配置)"
                 logger.error(
                     f"文件 {file_size_mb:.2f}MB 超过 base64 上限 "
-                    f"{self.max_base64_upload_mb}MB，已跳过 base64，避免 WebSocket 超时。"
-                    f"请配置 upload_path_map=Docker路径=NapCat可见路径"
-                    f"（虚拟机请填虚拟机内共享目录）"
+                    f"{self.max_base64_upload_mb}MB，已跳过 base64。"
+                    f"路径上传在约 {self.upload_sync_max_wait_sec:.0f}s 内仍失败 "
+                    f"（映射: {mapped}）。请在虚拟机执行: ls -lh \"{mapped}\" ；"
+                    f"若文件始终不存在，检查 VMware 共享文件夹是否正常；"
+                    f"若文件已存在仍 ENOENT，检查 NapCat 是否能访问该挂载点"
+                    f"（例如 NapCat 在虚拟机 Docker 内需额外挂载）"
                 )
 
             logger.error("所有上传方法都失败了")
@@ -1829,20 +1936,43 @@ class Main(Star):
         if not os.path.exists(file_path):
             return False
 
-        for file_arg, note in self._build_upload_path_candidates(file_path):
-            try:
-                logger.info(f"私聊路径上传 ({note}): {file_arg}")
-                await bot.call_action(
-                    action="upload_private_file",
-                    user_id=user_id,
-                    file=file_arg,
-                    name=filename,
-                )
-                return True
-            except Exception as e:
-                logger.warning(f"私聊路径上传失败 ({note}): {e}")
-
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        mapped = self._map_to_host_path(file_path)
+
+        if mapped:
+            delays = self._sync_wait_plan(file_size_mb)
+            for attempt, wait_sec in enumerate(delays, start=1):
+                if wait_sec > 0:
+                    await asyncio.sleep(wait_sec)
+                candidates = self._build_upload_path_candidates(
+                    file_path, mapped_only=(attempt > 1)
+                )
+                for file_arg, note in candidates:
+                    try:
+                        logger.info(f"私聊路径上传 ({note}): {file_arg}")
+                        await bot.call_action(
+                            action="upload_private_file",
+                            user_id=user_id,
+                            file=file_arg,
+                            name=filename,
+                        )
+                        return True
+                    except Exception as e:
+                        logger.warning(f"私聊路径上传失败 ({note}): {e}")
+        else:
+            for file_arg, note in self._build_upload_path_candidates(file_path):
+                try:
+                    logger.info(f"私聊路径上传 ({note}): {file_arg}")
+                    await bot.call_action(
+                        action="upload_private_file",
+                        user_id=user_id,
+                        file=file_arg,
+                        name=filename,
+                    )
+                    return True
+                except Exception as e:
+                    logger.warning(f"私聊路径上传失败 ({note}): {e}")
+
         allow_b64 = self.max_base64_upload_mb <= 0 or file_size_mb <= self.max_base64_upload_mb
         if allow_b64:
             try:

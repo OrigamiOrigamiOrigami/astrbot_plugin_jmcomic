@@ -48,6 +48,7 @@ pip install pillow pyyaml img2pdf jmcomic
 - **max_download_pages**: 最大下载页数，超过则拒绝下载（默认：100，设为 0 不限制）
 - **upload_path_map**: Docker→NapCat 可见路径映射（NapCat 在虚拟机时填虚拟机内共享目录，例如 `/AstrBot/data=/mnt/shared/main_bot/data`）
 - **max_base64_upload_mb**: 路径上传失败时允许 base64 的最大文件 MB（默认：8，过大易超时）
+- **upload_sync_max_wait_sec**: 共享目录同步等待上限秒数（默认：60，缓解 VMware hgfs 延迟）
 - **jmcomic_log_level**: 底层日志级别 off / summary / full（默认：off）
 
 ### PDF 设置
@@ -133,6 +134,11 @@ A: 常见于 AstrBot 与 NapCat 不在同一文件系统（Docker / 虚拟机分
 A: 请检查网络连接和代理配置，或手动更新 custom_domains 配置
 
 ## 更新日志
+
+### v1.0.7
+- 本地已有 PDF 缓存时跳过预览，直接上传
+- 路径上传优先 `file://`，并按文件大小延长共享目录同步等待/重试
+- `jm cleanup` 改为后台线程清理，避免阻塞事件循环
 
 ### v1.0.6
 - 用 AstrBot HtmlRenderer 合成封面+简介预览卡（`preview_card`）
