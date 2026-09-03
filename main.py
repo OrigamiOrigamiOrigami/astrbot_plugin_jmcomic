@@ -1166,8 +1166,17 @@ class Main(Star):
             logger.error(traceback.format_exc())
             return CommandResult().message(f"处理命令出错: {str(e)}")
     
-    async def download_comic(self, comic_id: str, event: AstrMessageEvent):
-        """下载漫画"""
+    async def download_comic(
+        self,
+        comic_id: str,
+        event: AstrMessageEvent,
+        wait: bool = False,
+    ):
+        """下载漫画。
+
+        wait=False（默认）：后台任务，立刻返回「正在上传/已启动」（命令行用法）。
+        wait=True：等下载+上传结束再返回最终结果（companion 等需要诚实 ACK 的调用方）。
+        """
         try:
             group_id = event.get_group_id() if hasattr(event, 'get_group_id') else None
 
@@ -1202,6 +1211,14 @@ class Main(Star):
                 else:
                     await self._send_album_preview_split(event, album_detail, comic_id, client)
 
+                if wait:
+                    outcome = await self._download_comic_task(
+                        comic_id, event, group_id, album_title
+                    )
+                    if not outcome:
+                        return CommandResult().message(f"漫画 {comic_id} 下载失败")
+                    return CommandResult().message(str(outcome))
+
                 task = asyncio.create_task(
                     self._download_comic_task(comic_id, event, group_id, album_title)
                 )
@@ -1232,7 +1249,7 @@ class Main(Star):
             logger.error(f"处理任务异常回调失败: {str(e)}")
     
     async def _download_comic_task(self, comic_id: str, event: AstrMessageEvent, group_id: str = None, album_title: str = None):
-        """漫画下载任务"""
+        """漫画下载任务。返回给人看的最终状态字符串（成功须含「请查收」等送达语义）。"""
         message = event
         error_msg = None
         
@@ -1263,23 +1280,21 @@ class Main(Star):
                 # 根据群聊状态发送消息
                 if group_id:
                     # 群聊消息，简短回复并上传群文件
-                    if bot:
-                        # 上传文件
-                        upload_success = await self._upload_to_group_file(
-                            bot, 
-                            group_id, 
-                            pdf_path, 
-                            f"jm_{comic_id}.pdf"
-                        )
-                        
-                        if upload_success:
-                            if message and hasattr(message, 'reply'):
-                                await message.reply(f"漫画 {comic_id} 已上传到群文件，请查收！")
-                        else:
-                            if message and hasattr(message, 'reply'):
-                                await message.reply(self._upload_fail_hint(comic_id))
-                    
-                    return f"漫画 {comic_id} 已下载完成"
+                    if not bot:
+                        return f"漫画 {comic_id} 上传失败：无法获取 bot"
+                    upload_success = await self._upload_to_group_file(
+                        bot,
+                        group_id,
+                        pdf_path,
+                        f"jm_{comic_id}.pdf"
+                    )
+                    if upload_success:
+                        if message and hasattr(message, 'reply'):
+                            await message.reply(f"漫画 {comic_id} 已上传到群文件，请查收！")
+                        return f"漫画 {comic_id} 已上传到群文件，请查收！"
+                    if message and hasattr(message, 'reply'):
+                        await message.reply(self._upload_fail_hint(comic_id))
+                    return f"漫画 {comic_id} 上传群文件失败"
                 else:
                     # 私聊情况下直接发送文件
                     # 获取用户ID
@@ -1308,12 +1323,12 @@ class Main(Star):
                                         f"{self._upload_fail_hint(comic_id)}"
                                     )
                                 )
-                                return f"漫画 {comic_id} 已下载完成，已通知用户"
+                                return f"漫画 {comic_id} 上传失败：无法发送文件"
                             except Exception as msg_err:
                                 logger.error(f"发送普通消息也失败: {str(msg_err)}")
                     
                     # 如果无法发送,返回本地路径
-                    return f"漫画 {comic_id} 已下载完成，文件路径: {pdf_path}"
+                    return f"漫画 {comic_id} 上传失败：文件仅保存在本地 {pdf_path}"
             
             # 创建漫画下载目录
             save_dir = os.path.join(download_dir, f"{comic_id}")
@@ -1401,28 +1416,24 @@ class Main(Star):
                         bot = event.bot
                     
                     if bot:
-                        # 上传文件
                         upload_success = await self._upload_to_group_file(
-                            bot, 
-                            group_id, 
-                            pdf_path, 
+                            bot,
+                            group_id,
+                            pdf_path,
                             f"jm_{comic_id}.pdf"
                         )
-                        
                         if upload_success:
                             if message and hasattr(message, 'reply'):
                                 await message.reply(f"漫画 {comic_id} 已上传到群文件，请查收！")
-                        else:
-                            if message and hasattr(message, 'reply'):
-                                await message.reply(self._upload_fail_hint(comic_id))
-                    else:
-                        logger.warning("无法获取bot对象，无法上传群文件")
-                else:
-                    if message and hasattr(message, 'reply'):
-                        await message.reply(f"创建PDF文件失败，请直接查看下载的图片。")
-                
-                # 群聊中只返回简单消息
-                return f"漫画 {comic_id} 已下载完成"
+                            return f"漫画 {comic_id} 已上传到群文件，请查收！"
+                        if message and hasattr(message, 'reply'):
+                            await message.reply(self._upload_fail_hint(comic_id))
+                        return f"漫画 {comic_id} 上传群文件失败"
+                    logger.warning("无法获取bot对象，无法上传群文件")
+                    return f"漫画 {comic_id} 上传失败：无法获取 bot"
+                if message and hasattr(message, 'reply'):
+                    await message.reply(f"创建PDF文件失败，请直接查看下载的图片。")
+                return f"漫画 {comic_id} 创建PDF失败"
             else:
                 # 私聊情况下直接发送文件
                 # 获取bot对象
@@ -1457,14 +1468,13 @@ class Main(Star):
                                     f"{self._upload_fail_hint(comic_id)}"
                                 )
                             )
-                            return f"漫画 {comic_id} 已下载完成，已通知用户"
+                            return f"漫画 {comic_id} 上传失败：无法发送文件"
                         except Exception as msg_err:
                             logger.error(f"发送普通消息也失败: {str(msg_err)}")
                 else:
                     logger.error(f"无法获取用户ID或bot对象: user_id={user_id}, bot={bot}")
                 
-                # 如果无法发送,返回本地路径
-                return f"漫画 {comic_id} 已下载完成，文件路径: {pdf_path}"
+                return f"漫画 {comic_id} 上传失败：文件仅保存在本地 {pdf_path}"
         except Exception as e:
             logger.error(f"下载失败: {str(e)}")
             error_msg = str(e)
