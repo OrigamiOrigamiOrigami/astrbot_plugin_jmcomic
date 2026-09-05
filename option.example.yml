@@ -1,0 +1,26 @@
+# 模板：首次运行复制到 data/plugin_data/jmcomic/option.yml
+# 运行时代理由插件按面板配置写入，勿在此写本机密钥。
+client:
+  cache: null
+  domain: []
+  impl: api
+  postman:
+    meta_data:
+      impersonate: chrome
+      proxies: {}
+      timeout: 10
+      verify: false
+    type: curl_cffi
+  retry_times: 10
+dir_rule:
+  base_dir: downloads
+  rule: Bd
+download:
+  cache: true
+  download_mode: 1
+  max_retry_times: 3
+  page_thread_cnt: 4
+  result_folder: ''
+  result_folder_ttl: 86400
+log: false
+plugins: {}

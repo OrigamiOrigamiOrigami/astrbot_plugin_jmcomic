@@ -32,8 +32,8 @@
     "auto_update_jmcomic": {
         "type": "bool",
         "title": "自动更新 jmcomic",
-        "description": "插件启动时自动执行 pip install jmcomic -U，保持底层库为最新版",
-        "default": true
+        "description": "插件启动时自动执行 pip install jmcomic -U（市场默认关闭；需要时用 jm update 或手动开启）",
+        "default": false
     },
     "cleanup_days": {
         "type": "int",
@@ -44,7 +44,7 @@
     "download_path": {
         "type": "string",
         "title": "下载路径",
-        "description": "漫画下载保存的目录路径",
+        "description": "相对路径会落在 plugin_data/jmcomic 下；留空或 ./downloads 即默认 downloads。绝对路径按原样使用",
         "default": "./downloads"
     },
     "compress_quality": {

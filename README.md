@@ -2,6 +2,8 @@
 
 AstrBot 的禁漫漫画下载插件，支持下载漫画并自动转换为 PDF 格式。
 
+代码按职责拆成 `deps` / `paths` / `upload` / `download_pdf` / `commands` 等模块，`main.py` 为薄 Star 入口。
+
 ## 功能特性
 
 - 🎨 下载禁漫漫画并转换为 PDF
@@ -10,13 +12,12 @@ AstrBot 的禁漫漫画下载插件，支持下载漫画并自动转换为 PDF �
 - 🗑️ 自动清理过期文件
 - 🌐 支持代理配置
 - 📊 PDF 压缩优化
-- ⚡ 自动检测并安装缺失的依赖
+- ⚡ 启动时检测依赖（不自动 pip；请按 requirements.txt 安装）
 
 ## 安装
 
-1. 将插件文件夹放入 AstrBot 的 `plugins` 目录
-2. 插件会在首次加载时自动检测并安装依赖
-3. 如果自动安装失败，可以手动安装依赖：
+1. 将插件放入 AstrBot 的 `plugins` 目录（或从市场安装）
+2. 安装依赖：
 ```bash
 pip install -r requirements.txt
 ```
@@ -24,6 +25,7 @@ pip install -r requirements.txt
 ```bash
 pip install pillow pyyaml img2pdf jmcomic
 ```
+3. 下载与 `option.yml` 默认落在 `data/plugin_data/jmcomic/`（更新插件不丢缓存）
 
 ## 配置说明
 
@@ -33,13 +35,13 @@ pip install pillow pyyaml img2pdf jmcomic
 - **use_proxy**: 是否使用代理（默认：true）
 - **proxy_address**: 代理地址（默认：http://127.0.0.1:7890；Docker 内自动改为 host.docker.internal）
 - **client_impl**: 客户端类型，`api`（推荐）或 `html`（默认：api）
-- **auto_update_jmcomic**: 启动时自动升级 jmcomic 库（默认：true）
+- **auto_update_jmcomic**: 启动时自动升级 jmcomic 库（默认：false；可用 `jm update`）
 
 ### 域名设置
 - **custom_domains**: 自定义域名，仅 `client_impl=html` 时生效
 
 ### 下载与预览
-- **download_path**: 下载保存路径（默认：./downloads）
+- **download_path**: 下载路径；相对路径相对 `plugin_data/jmcomic`，默认 `./downloads`
 - **cleanup_days**: 文件保留天数（默认：3天）
 - **send_album_preview**: 下载/查询时发送封面和简介（默认：true）
 - **preview_card**: 用 AstrBot HtmlRenderer 合成封面+简介为一张预览卡（默认：true；失败自动回退分发）
@@ -115,7 +117,7 @@ jm cleanup
 ## 常见问题
 
 ### Q: 插件加载时提示缺少依赖
-A: 插件会自动尝试安装依赖。如果自动安装失败，请手动运行 `pip install -r requirements.txt`
+A: 请手动运行 `pip install -r requirements.txt`（插件不会自动 pip）
 
 ### Q: 下载失败，提示"访问被拒绝"
 A: 请确保已启用代理配置，并且代理服务正常运行
@@ -134,6 +136,10 @@ A: 常见于 AstrBot 与 NapCat 不在同一文件系统（Docker / 虚拟机分
 A: 请检查网络连接和代理配置，或手动更新 custom_domains 配置
 
 ## 更新日志
+
+### v1.0.8
+- 下载与 `option.yml` 落盘到 `plugin_data/jmcomic`（兼容旧插件目录 PDF 缓存）
+- `domain_tester` 去掉 `requests`，改用标准库
 
 ### v1.0.7
 - 本地已有 PDF 缓存时跳过预览，直接上传
@@ -184,4 +190,4 @@ MIT License
 
 ## 作者
 
-Origami
+OrigamiOrigamiOrigami
