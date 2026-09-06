@@ -41,6 +41,13 @@
         "description": "自动清理多少天前的下载文件",
         "default": 3
     },
+    "global_download_concurrency": {
+        "type": "int",
+        "title": "全局同时下载数",
+        "description": "全实例（所有群/私聊）同时最多下几个本子；建议保持 1，避免卡死",
+        "hint": "改完需重载插件；已启动的闸门不会热改 limit",
+        "default": 1
+    },
     "download_path": {
         "type": "string",
         "title": "下载路径",

@@ -23,19 +23,19 @@ from . import commands as cmd
 logger = logging.getLogger("astrbot")
 
 
-@register("jmcomic", "OrigamiOrigamiOrigami", "禁漫漫画下载插件", "1.0.8")
+@register("jmcomic", "OrigamiOrigamiOrigami", "禁漫漫画下载插件", "1.0.9")
 class Main(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.context = context
         self.config = config or {}
-
+        
         # 检查依赖是否已安装
         if jmcomic is None or yaml is None or Image is None or img2pdf is None:
             logger.error("JMComic 插件依赖未安装，插件无法初始化")
             logger.error("请运行: pip install pillow pyyaml img2pdf jmcomic")
             return
-
+        
         self.plugin_root = os.path.dirname(os.path.abspath(__file__))
         self.data_dir = resolve_data_dir(self.plugin_root)
 
@@ -52,6 +52,13 @@ class Main(Star):
         self.client_impl = self.config.get("client_impl", "api")
         self.auto_update_jmcomic = bool(self.config.get("auto_update_jmcomic", False))
         self.cleanup_days = self.config.get("cleanup_days", 3)
+        self.global_download_concurrency = int(
+            self.config.get("global_download_concurrency", 1) or 1
+        )
+        # 预创建闸门，保证配置 limit 在重载后生效
+        from .download_gate import get_download_gate
+
+        get_download_gate(self.global_download_concurrency)
         self.compress_quality = self.config.get("compress_quality", 85)
         self.max_image_dimension = self.config.get("max_image_dimension", 1200)
         self.timeout = self.config.get("timeout", 10)
@@ -74,7 +81,7 @@ class Main(Star):
                 "请配置 Docker路径=NapCat可见路径，"
                 "例如 /AstrBot/data=/mnt/shared/main_bot/data"
             )
-
+        
         self.uploader = FileUploader(
             self.upload_path_map,
             self.max_base64_upload_mb,
@@ -84,7 +91,7 @@ class Main(Star):
         # option / 下载落在 plugin_data，更新插件不丢文件
         self.option_file = os.path.join(self.data_dir, "option.yml")
         ensure_option_file(self.plugin_root, self.data_dir, self.option_file)
-
+        
         # 创建下载目录
         if not os.path.exists(self.download_dir):
             try:
@@ -92,12 +99,12 @@ class Main(Star):
                 logger.info(f"创建下载目录成功: {self.download_dir}")
             except Exception as e:
                 logger.error(f"创建下载目录失败: {e}")
-
+                
         # 检查配置文件是否存在
         if not os.path.exists(self.option_file):
             logger.error(f"配置文件不存在: {self.option_file}")
             return
-
+        
         apply_runtime_option(
             self.option_file,
             self.download_dir,
@@ -111,7 +118,7 @@ class Main(Star):
                 "jmcomic_log_level": self.jmcomic_log_level,
             },
         )
-
+        
         # 配置自定义域名（仅 html 客户端需要）
         if self.client_impl == "html" and self.custom_domains:
             domains = [d.strip() for d in self.custom_domains.split(',') if d.strip()]
@@ -120,7 +127,7 @@ class Main(Star):
                 logger.info(f"已配置自定义网页域名: {domains}")
         elif self.client_impl == "api":
             logger.info("使用 API 客户端，域名将由 jmcomic 自动更新")
-
+        
         # 注册命令（大小写 JM/jm，支持 jm123456 无空格）
         self.context.register_commands(
             "jmcomic",
@@ -131,10 +138,10 @@ class Main(Star):
             use_regex=True,
             ignore_prefix=True
         )
-
+        
         # 启动后台任务：jmcomic 自动更新、过期文件清理
         asyncio.create_task(self._startup_tasks())
-
+    
     def _pdf_path(self, comic_id: str) -> str:
         return pdf_path(self.download_dir, self.legacy_download_dir, comic_id)
 
@@ -237,7 +244,7 @@ class Main(Star):
         if "MissingAlbumPhotoException" in error_msg or "请求的本子不存在" in error_msg:
             return f"漫画ID {comic_id} 不存在" if comic_id else "漫画不存在"
         return "连接失败，请检查网络或使用代理"
-
+    
     def _handle_task_exception(self, task):
         """处理异步任务异常的回调函数"""
         try:
@@ -246,13 +253,13 @@ class Main(Star):
                 logger.error(f"异步任务异常: {str(exception)}")
         except Exception as e:
             logger.error(f"处理任务异常回调失败: {str(e)}")
-
+    
     async def _startup_tasks(self):
         await cmd.startup_tasks(self)
 
     def _update_domains_in_config(self, domains):
         cmd.update_domains_in_config(self, domains)
-
+    
     async def _create_pdf(self, comic_dir, album_title, comic_id):
         return await create_pdf(
             comic_dir,
@@ -298,6 +305,6 @@ class Main(Star):
 
     async def update_jmcomic_lib(self, event: AstrMessageEvent):
         return await cmd.update_jmcomic_lib(self, event)
-
+    
     async def update_domains(self, event: AstrMessageEvent):
         return await cmd.update_domains(self, event)

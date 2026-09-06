@@ -3,7 +3,7 @@ display_name: 禁漫下载
 short_desc: 禁漫本子搜索与下载，支持转 PDF
 desc: 禁漫漫画下载插件，支持按 ID/标签/标题搜索与下载，并转换为 PDF 格式发送。
 help: "jm <漫画ID> / jm123456 / JM123456 - 下载漫画（发送封面和简介）\njm info <ID> - 仅查看详情不下载\njm search tag <标签> [页码] - 按标签搜索\njm search title <关键词> [页码] - 按标题搜索\njm download <漫画ID> - 下载漫画\njm domains - 测试并更新可用域名\njm update - 手动更新 jmcomic 库\njm cleanup - 手动清理旧文件"
-version: v1.0.8
+version: v1.0.9
 author: OrigamiOrigamiOrigami
 repo: https://github.com/OrigamiOrigamiOrigami/astrbot_plugin_jmcomic
 astrbot_version: ">=4.0.0"

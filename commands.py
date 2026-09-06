@@ -11,8 +11,16 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context
 
 from .album import resolve_album_page_count, search_albums_sync
+from .delivery import (
+    get_inflight,
+    mark_delivered,
+    outcome_looks_delivered,
+    recently_delivered,
+    set_inflight,
+)
 from .deps import reload_jmcomic_modules, update_jmcomic_package, yaml
 from .download_pdf import cleanup_old_files_sync, download_comic_task, format_cleanup_size
+from .download_gate import get_download_gate
 from .proxy_util import get_default_proxy_config, get_proxy_host
 from .text_util import (
     R18G_BLOCK_MESSAGE,
@@ -67,6 +75,7 @@ async def search_comics(plugin, mode: str, query: str, page: int, event: AstrMes
 async def cleanup_old_files(plugin, force_all=False):
     """清理旧文件（线程池执行，不阻塞事件循环）"""
     try:
+        legacy = getattr(plugin, "legacy_download_dir", None) or ""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
@@ -74,6 +83,7 @@ async def cleanup_old_files(plugin, force_all=False):
             plugin.download_dir,
             plugin.cleanup_days,
             force_all,
+            [legacy] if legacy else None,
         )
     except Exception as e:
         logger.error(f"清理旧文件失败: {str(e)}")
@@ -92,18 +102,40 @@ async def manual_cleanup_task(plugin, event: AstrMessageEvent):
                 f"删除了 {result['deleted_files']}/{result['total_files']} 个文件\n"
                 f"释放空间: {format_cleanup_size(result['freed_size'])}"
             )
+            failed = int(result.get("failed_deletes") or 0)
+            if failed:
+                result_msg += f"\n删除失败: {failed}（可能被占用，稍后重试）"
         else:
             result_msg = "文件清理完成"
-        if message and hasattr(message, 'reply'):
-            await message.reply(result_msg)
+        await _notify(plugin, message, result_msg)
     except Exception as e:
         logger.error(f"手动清理任务异常: {str(e)}")
         logger.error(traceback.format_exc())
-        if message and hasattr(message, 'reply'):
-            try:
-                await message.reply("清理失败")
-            except Exception:
-                pass
+        await _notify(plugin, message, "清理失败")
+
+
+async def _notify(plugin, event: AstrMessageEvent | None, text: str) -> None:
+    """后台任务回消息：优先 plugin._send_text / event.send，避免裸 reply 静默失败。"""
+    if not event or not text:
+        return
+    send_text = getattr(plugin, "_send_text", None)
+    if callable(send_text):
+        try:
+            await send_text(event, text)
+            return
+        except Exception as e:
+            logger.warning("jmcomic 通知(_send_text)失败: %s", e)
+    try:
+        await event.send(CommandResult().message(text))
+        return
+    except Exception as e:
+        logger.warning("jmcomic 通知(event.send)失败: %s", e)
+    reply = getattr(event, "reply", None)
+    if callable(reply):
+        try:
+            await reply(text)
+        except Exception as e:
+            logger.warning("jmcomic 通知(reply)失败: %s", e)
 
 
 async def manual_cleanup(plugin, event: AstrMessageEvent):
@@ -469,8 +501,32 @@ async def download_comic(
     """
     try:
         group_id = event.get_group_id() if hasattr(event, 'get_group_id') else None
+        channel = f"group:{group_id}" if group_id else (
+            f"private:{event.get_sender_id()}" if hasattr(event, "get_sender_id") else "private"
+        )
 
         try:
+            if recently_delivered(channel, comic_id):
+                return CommandResult().message(
+                    f"漫画 {comic_id} 刚才已发过，请查收（未重复发送）"
+                )
+
+            inflight = get_inflight(channel, comic_id)
+            if inflight is not None:
+                if wait:
+                    try:
+                        outcome = await inflight
+                    except Exception as e:
+                        return CommandResult().message(f"漫画 {comic_id} 下载失败: {e}")
+                    if outcome_looks_delivered(str(outcome) if outcome else ""):
+                        mark_delivered(channel, comic_id)
+                    if not outcome:
+                        return CommandResult().message(f"漫画 {comic_id} 下载失败")
+                    return CommandResult().message(str(outcome))
+                return CommandResult().message(
+                    f"漫画 {comic_id} 已在下载中，请稍候…"
+                )
+
             album_detail, client, album_title = await plugin._fetch_album(comic_id)
             if plugin.filter_r18g and album_has_r18g(album_detail):
                 return CommandResult().message(R18G_BLOCK_MESSAGE)
@@ -500,19 +556,41 @@ async def download_comic(
             else:
                 await plugin._send_album_preview_split(event, album_detail, comic_id, client)
 
-            if wait:
-                outcome = await download_comic_task(
-                    plugin, comic_id, event, group_id, album_title
-                )
-                if not outcome:
-                    return CommandResult().message(f"漫画 {comic_id} 下载失败")
-                return CommandResult().message(str(outcome))
+            gate = get_download_gate(
+                int(getattr(plugin, "global_download_concurrency", 1) or 1)
+            )
+            snap_before = gate.snapshot()
 
             task = asyncio.create_task(
                 download_comic_task(plugin, comic_id, event, group_id, album_title)
             )
+            set_inflight(channel, comic_id, task)
             task.add_done_callback(plugin._handle_task_exception)
 
+            if wait:
+                try:
+                    # shield：companion wait_for 超时后不取消真实上传，避免半截重试再发一遍
+                    outcome = await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    return CommandResult().message(
+                        f"漫画 {comic_id} 下载仍在进行，结果尚未确认"
+                    )
+                except Exception as e:
+                    return CommandResult().message(f"漫画 {comic_id} 下载失败: {e}")
+                if outcome_looks_delivered(str(outcome) if outcome else ""):
+                    mark_delivered(channel, comic_id)
+                if not outcome:
+                    return CommandResult().message(f"漫画 {comic_id} 下载失败")
+                return CommandResult().message(str(outcome))
+
+            if snap_before.get("busy"):
+                ahead = int(snap_before.get("ahead") or 0)
+                if ahead <= 0:
+                    ahead = 1
+                return CommandResult().message(
+                    f"漫画 {comic_id} 已加入全局下载队列"
+                    f"（前面还有 {ahead} 个），轮到会自动开始…"
+                )
             if pdf_exists:
                 return CommandResult().message(f"漫画 {comic_id} 已有缓存，正在上传…")
             return plugin._build_download_start_result(comic_id)

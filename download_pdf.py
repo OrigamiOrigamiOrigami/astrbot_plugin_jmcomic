@@ -19,8 +19,12 @@ def format_cleanup_size(size):
     return f"{size:.2f}TB"
 
 
-def cleanup_old_files_sync(download_dir, cleanup_days, force_all=False):
-    """同步清理 downloads（应在线程池中调用，避免阻塞事件循环）"""
+def cleanup_old_files_sync(download_dir, cleanup_days, force_all=False, extra_dirs=None):
+    """同步清理 downloads（应在线程池中调用，避免阻塞事件循环）。
+
+    ``extra_dirs``：额外目录（如旧版插件目录 ``plugins/jmcomic/downloads``），
+    与主目录一并清理，避免「主目录清完、遗留缓存还在」。
+    """
     if force_all:
         logger.info("开始清理所有文件...")
     else:
@@ -29,49 +33,64 @@ def cleanup_old_files_sync(download_dir, cleanup_days, force_all=False):
     current_time = time.time()
     cutoff_time = current_time - (cleanup_days * 24 * 60 * 60)
 
-    if not os.path.exists(download_dir):
-        logger.warning("下载目录不存在，跳过清理")
+    dirs: list[str] = []
+    for d in [download_dir, *(extra_dirs or [])]:
+        if not d:
+            continue
+        norm = os.path.normpath(os.path.abspath(d))
+        if norm not in dirs:
+            dirs.append(norm)
+
+    existing = [d for d in dirs if os.path.isdir(d)]
+    if not existing:
+        logger.warning("下载目录不存在，跳过清理（tried=%s）", dirs)
         return None
 
     total_files = 0
     deleted_files = 0
     total_size = 0
     freed_size = 0
+    failed_deletes = 0
 
-    for root, dirs, files in os.walk(download_dir):
-        for file in files:
-            total_files += 1
-            file_path = os.path.join(root, file)
-            try:
-                mtime = os.path.getmtime(file_path)
-                file_size = os.path.getsize(file_path)
-                total_size += file_size
-                should_delete = force_all or (mtime < cutoff_time)
-                if should_delete:
-                    try:
-                        os.remove(file_path)
-                        deleted_files += 1
-                        freed_size += file_size
-                        logger.info(f"已删除文件: {file_path}")
-                    except Exception as e:
-                        logger.error(f"删除文件失败 {file_path}: {str(e)}")
-            except Exception as e:
-                logger.error(f"获取文件信息失败 {file_path}: {str(e)}")
+    for download_dir in existing:
+        logger.info("清理目录: %s", download_dir)
+        for root, dirs_walk, files in os.walk(download_dir):
+            for file in files:
+                total_files += 1
+                file_path = os.path.join(root, file)
+                try:
+                    mtime = os.path.getmtime(file_path)
+                    file_size = os.path.getsize(file_path)
+                    total_size += file_size
+                    should_delete = force_all or (mtime < cutoff_time)
+                    if should_delete:
+                        try:
+                            os.remove(file_path)
+                            deleted_files += 1
+                            freed_size += file_size
+                            logger.info(f"已删除文件: {file_path}")
+                        except Exception as e:
+                            failed_deletes += 1
+                            logger.error(f"删除文件失败 {file_path}: {str(e)}")
+                except Exception as e:
+                    logger.error(f"获取文件信息失败 {file_path}: {str(e)}")
 
-    for root, dirs, files in os.walk(download_dir, topdown=False):
-        for dir_name in dirs:
-            dir_path = os.path.join(root, dir_name)
-            try:
-                if not os.listdir(dir_path):
-                    os.rmdir(dir_path)
-                    logger.info(f"已删除空目录: {dir_path}")
-            except Exception as e:
-                logger.error(f"删除空目录失败 {dir_path}: {str(e)}")
+        for root, dirs_walk, files in os.walk(download_dir, topdown=False):
+            for dir_name in dirs_walk:
+                dir_path = os.path.join(root, dir_name)
+                try:
+                    if not os.listdir(dir_path):
+                        os.rmdir(dir_path)
+                        logger.info(f"已删除空目录: {dir_path}")
+                except Exception as e:
+                    logger.error(f"删除空目录失败 {dir_path}: {str(e)}")
 
     result_msg = (
         f"清理完成:\n"
+        f"- 目录数: {len(existing)}\n"
         f"- 总文件数: {total_files}\n"
         f"- 删除文件数: {deleted_files}\n"
+        f"- 删除失败: {failed_deletes}\n"
         f"- 总空间: {format_cleanup_size(total_size)}\n"
         f"- 释放空间: {format_cleanup_size(freed_size)}"
     )
@@ -84,9 +103,11 @@ def cleanup_old_files_sync(download_dir, cleanup_days, force_all=False):
     return {
         'total_files': total_files,
         'deleted_files': deleted_files,
+        'failed_deletes': failed_deletes,
         'total_size': total_size,
         'freed_size': freed_size,
         'force_all': force_all,
+        'dirs': existing,
     }
 
 
@@ -274,7 +295,55 @@ async def create_pdf(
 
 
 async def download_comic_task(plugin, comic_id: str, event, group_id: str = None, album_title: str = None):
-    """漫画下载任务。返回给人看的最终状态字符串（成功须含「请查收」等送达语义）。"""
+    """漫画下载任务。返回最终状态字符串（经全局闸门，默认同时只下一个）。"""
+    from .delivery import mark_delivered, recently_delivered
+    from .download_gate import get_download_gate
+
+    message = event
+    channel = f"group:{group_id}" if group_id else (
+        f"private:{event.get_sender_id()}" if hasattr(event, "get_sender_id") else "private"
+    )
+    if not group_id and hasattr(event, "get_group_id"):
+        group_id = event.get_group_id()
+        channel = f"group:{group_id}" if group_id else channel
+
+    limit = int(getattr(plugin, "global_download_concurrency", 1) or 1)
+    gate = get_download_gate(limit)
+    label = f"{channel}:{comic_id}"
+
+    async with gate.slot(label) as ahead:
+        # 入队提示已在 commands 里发过；这里只在真正轮到时提一声，避免数字对不上
+        if ahead > 0:
+            tip = f"轮到漫画 {comic_id} 了，开始下载…"
+            logger.info("jmcomic %s (waited_ahead=%s)", tip, ahead)
+            send_text = getattr(plugin, "_send_text", None)
+            if callable(send_text):
+                try:
+                    await send_text(event, tip)
+                except Exception as e:
+                    logger.warning("jmcomic 开下提示发送失败: %s", e)
+            elif message and hasattr(message, "reply"):
+                try:
+                    await message.reply(tip)
+                except Exception:
+                    pass
+        return await _download_comic_task_body(
+            plugin, comic_id, event, group_id, album_title, channel=channel
+        )
+
+
+async def _download_comic_task_body(
+    plugin,
+    comic_id: str,
+    event,
+    group_id: str = None,
+    album_title: str = None,
+    *,
+    channel: str,
+):
+    """实际下载/上传逻辑（已持有全局闸门）。"""
+    from .delivery import mark_delivered, recently_delivered
+
     message = event
     error_msg = None
     uploader = plugin.uploader
@@ -283,6 +352,10 @@ async def download_comic_task(plugin, comic_id: str, event, group_id: str = None
         # 再次检查群聊状态（以防传入的group_id为None）
         if not group_id and hasattr(event, 'get_group_id'):
             group_id = event.get_group_id()
+            channel = f"group:{group_id}" if group_id else channel
+
+        if recently_delivered(channel, comic_id):
+            return f"漫画 {comic_id} 刚才已发过，请查收（未重复发送）"
 
         download_dir = plugin.download_dir
         # 检查目录是否存在，不存在则创建
@@ -313,6 +386,7 @@ async def download_comic_task(plugin, comic_id: str, event, group_id: str = None
                     f"jm_{comic_id}.pdf"
                 )
                 if upload_success:
+                    mark_delivered(channel, comic_id)
                     if message and hasattr(message, 'reply'):
                         await message.reply(f"漫画 {comic_id} 已上传到群文件，请查收！")
                     return f"漫画 {comic_id} 已上传到群文件，请查收！"
@@ -332,6 +406,7 @@ async def download_comic_task(plugin, comic_id: str, event, group_id: str = None
                             bot, user_id, pdf_path, f"jm_{comic_id}.pdf"
                         )
                         if ok:
+                            mark_delivered(channel, comic_id)
                             return f"漫画 {comic_id} 已发送，请查收"
                         raise Exception("私聊文件上传失败")
                     except Exception as upload_err:
@@ -447,6 +522,7 @@ async def download_comic_task(plugin, comic_id: str, event, group_id: str = None
                         f"jm_{comic_id}.pdf"
                     )
                     if upload_success:
+                        mark_delivered(channel, comic_id)
                         if message and hasattr(message, 'reply'):
                             await message.reply(f"漫画 {comic_id} 已上传到群文件，请查收！")
                         return f"漫画 {comic_id} 已上传到群文件，请查收！"
@@ -477,6 +553,7 @@ async def download_comic_task(plugin, comic_id: str, event, group_id: str = None
                         bot, user_id, pdf_path, f"jm_{comic_id}.pdf"
                     )
                     if ok:
+                        mark_delivered(channel, comic_id)
                         return f"漫画 {comic_id} 已发送，请查收"
                     raise Exception("私聊文件上传失败")
                 except Exception as upload_err:
